@@ -185,15 +185,6 @@ The implementation achieves:
 - **Availability** → Backup + Restore validation  
 - **Accountability** → Audit logs + Temporal history  
 
-## Repository Structure
-medical-info-system-sqlserver/
-│
-├── sql/
-│ └── MedicalInfoSystem.sql
-├── README.md
-└── .gitignore
-
-
 The SQL script is idempotent and includes:
 
 - Database setup  
