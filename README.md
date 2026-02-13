@@ -22,12 +22,12 @@ Diagnosis records.
 
 The original system was functionally complete but lacked a structured security architecture.
 
-## A security review was commissioned to:
+A security review was commissioned to:
 Identify potential weaknesses,
 Strengthen access control,
 Protect sensitive medical data,
 Ensure traceability and recoverability,
-Preserve usability for all authenticated users,
+Preserve usability for all authenticated users.
 
 All users connect via SQL Server Management Studio (SSMS) and are expected to execute SQL queries relevant to their roles.
 
