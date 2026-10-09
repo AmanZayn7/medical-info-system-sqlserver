@@ -5,3 +5,6 @@
 *.ldf
 *.pvk
 *.cer
+
+__pycache__/
+*.pyc

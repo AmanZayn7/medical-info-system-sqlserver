@@ -1,0 +1,28 @@
+name: Verify SQL Server demonstration
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_PID: Developer
+          MSSQL_SA_PASSWORD: AuditRunner#2026_DisposableOnly
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install twice and exercise permissions, encryption, history, and backups
+        env:
+          SQLSERVER_CONTAINER: ${{ job.services.sqlserver.id }}
+          SQLSERVER_SA_PASSWORD: AuditRunner#2026_DisposableOnly
+        run: python tests/check_sqlserver.py
