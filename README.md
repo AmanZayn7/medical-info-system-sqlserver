@@ -1,200 +1,66 @@
-# Medical Information System (SQL Server)
-A secure, role-based, encrypted, auditable, and fully recoverable medical database system implemented in Microsoft SQL Server.
+# Medical Information System — SQL Server
 
-This project demonstrates practical implementation of:
-Schema-level security isolation,
-Role-Based Access Control (RBAC),
-Column-level encryption (AES-256),
-Secure stored procedure APIs,
-DML / DDL / DCL / Logon auditing,
-Temporal system-versioned tables,
-Full, Differential, and Log backup strategy,
-Restore validation and key recovery,
+A SQL Server coursework project demonstrating role-based access, encrypted patient and diagnosis fields, controlled stored procedures, audit triggers, temporal history, and backup/restore operations using synthetic records.
 
-The objective is not just data storage but secure, compliant, operational database design.
+[SQL implementation](sql/MedicalInfoSystem.sql) · [Automated SQL Server checks](.github/workflows/verify.yml) · [Original coursework report](Database%20Security%20Report.pdf)
 
-## Problem Context
-APU Hospital (Bukit Jalil, Kuala Lumpur) operates a medical database system to manage:
-Staff (Doctors, Nurses),
-Patients,
-Appointments,
-Diagnosis records.
+## What the system does
 
-The original system was functionally complete but lacked a structured security architecture.
+Doctors, nurses, and patients access a medical database through an `api` schema. Base tables live in `app`; audit logs and temporal history live in `audit`. Application roles are denied direct access to `app` and receive permissions on specific API objects, rather than every procedure in the schema.
 
-A security review was commissioned to:
-Identify potential weaknesses,
-Strengthen access control,
-Protect sensitive medical data,
-Ensure traceability and recoverability,
-Preserve usability for all authenticated users.
+| Role | Permitted operations |
+| --- | --- |
+| Patient | Read and update their own contact details; read their own diagnosis records; read the staff name/office-phone directory. |
+| Doctor | Read and update their own personal details; read the patient name/phone directory and diagnoses; add or update diagnoses for appointments assigned to them. |
+| Nurse | Read and update their own personal details; read/update patient name and phone; create appointments and reschedule or cancel appointments that have no diagnosis. |
+| Demonstration administrator | Database administration and privileged API access. |
 
-All users connect via SQL Server Management Studio (SSMS) and are expected to execute SQL queries relevant to their roles.
+Self-service and doctor identity checks use the original SQL login. Demonstration patient and staff logins match their record IDs; specifying somebody else's ID does not grant access to that record. A doctor cannot overwrite an existing diagnosis through the add procedure.
 
-## The database must continuously satisfy:
-Confidentiality,
-Integrity,
-Availability,
-Functionality,
-Usability,
-Security Objectives.
+## Encryption and history
 
-The implemented solution addresses the following mandatory requirements of the project:
+Patient phone/address, staff personal details, and diagnosis notes use a certificate and AES-256 symmetric key. Authorized procedures open the key, encrypt or decrypt the required fields, and close it. Diagnosis text is limited to 7,000 bytes before encryption.
 
-## General Objectives
+System-versioned temporal history is enabled for `Patient`, `Staff`, and `AppointmentAndDiagnosis`. DML triggers record inserts, updates and deletes; additional triggers record selected table/procedure DDL, database permission events and successful logons. Original login identity is retained when procedures execute as their owner.
 
-Enforce strong confidentiality, integrity, and availability controls,
-Ensure Superadmin can perform all required DDL and DML operations,
-Prevent unauthorized exposure or deletion of sensitive data,
-Guarantee full traceability and recoverability of all data changes,
-Allow all users to log in and perform their designated tasks,
-Track all user activities, including attempted actions.
+Column encryption does not encrypt every database field or backup file. These triggers do not capture every activity, SELECT, rejected request or failed authentication, and do not constitute a tamper-proof security audit.
 
-## Staff Table Objectives
+## Run the demonstration
 
-Enforce two staff roles: Doctor and Nurse,
-Staff can view their own full details in plaintext,
-Staff can update their own details,
-All authenticated users can view staff name and office phone only.
+1. Use a disposable SQL Server instance. The automated checks use SQL Server 2022 Developer on Linux.
+2. Open [MedicalInfoSystem.sql](sql/MedicalInfoSystem.sql) in SSMS as an administrator with permission to create databases, logins and server triggers. Execute the full script in order. Alternatively, use `sqlcmd` with batch support.
+3. Connect separately as the demonstration doctor, nurse or patient to exercise the permitted procedures. Identity checks refer to the original login; administrator-side `EXECUTE AS USER` does not simulate a separate authenticated login.
+4. Optional example operations remain commented out. The setup seeds one doctor, one nurse and two patients, but does not create demo appointments.
 
-## Patient Table Objectives
+The script includes public demonstration passwords and disables password-policy checks for its sample logins. Use synthetic data on an isolated instance. The logon trigger is server-scoped and depends on this database; remove or disable it before removing the demonstration database. This is an educational implementation, not a production deployment or compliance certification.
 
-Patients can view their own full details in plaintext,
-Patients can update their own details,
-Doctors and nurses can view all patient names and phone numbers,
-Only nurses can update patient name and phone.
+Fresh installation and a second execution are tested. Automatic migration from arbitrary older schemas, including incompatible manually created history tables, is not covered.
 
-## Appointment & Diagnosis Objectives
+## Backup and recovery
 
-Only nurses can add or cancel appointments,
-Nurses may modify appointments only if diagnosis has not been added,
-Doctors may add diagnosis only after appointment exists,
-Patients can view all of their own diagnosis records,
-Doctors can view all diagnosis records,
-Doctors may update only diagnosis they created,
-Nurses must not view diagnosis details.
+The backup section is skipped unless `run_backup_demo` is enabled in the current session. To opt in, run this before the script, using the same connection:
 
-## Implementation Scope
+```sql
+EXEC sys.sp_set_session_context @key=N'run_backup_demo', @value=1;
+GO
+```
 
-This project delivers complete and tested solutions covering:
-Role-based access control (RBAC),
-Schema isolation (app vs api),
-Controlled API-layer execution,
-Column-level encryption (AES-256),
-Secure diagnosis workflows,
-DML / DDL / DCL / Logon auditing,
-Temporal table versioning,
-Full, Differential, and Log backup strategy,
-Restore validation and encryption key backup.
+It uses the instance's default backup directory, sets the demonstration database to FULL recovery with page checksums, performs full/differential/log backups with verification, and exports the encryption certificate/private key and database master key. File access occurs on the database server. The section does not create an automatic backup schedule; weekly/daily/hourly labels describe intended scheduling roles.
 
-## Architecture
-### Schema Isolation
+Backup exports use public demonstration passwords. Keep generated database/key files out of Git and replace the example credentials for any adaptation. Point-in-time and cross-server recovery instructions remain templates; they are not certified by this project's tests.
 
-Two schemas are used:
+## Automated verification
 
-- `app` → Internal data tables,
-- `api` → Controlled access layer (views and stored procedures).
+The [GitHub Actions workflow](.github/workflows/verify.yml) starts a disposable SQL Server 2022 container and runs [the integration checks](tests/check_sqlserver.py). It checks:
 
-Direct access to base tables in `app` is denied to non-admin roles.  
-All operations occur through controlled objects in `api`.
+- Initial installation and repeat installation.
+- Direct-table denial, per-role procedure permissions and cross-user access rejection.
+- Diagnosis ownership, input size and protection of diagnosed appointments.
+- Encryption/decryption, temporal history and original audit identity.
+- Full, differential and log backup verification, key exports, and a full restore to a separate test database.
 
+The workflow also verifies successful-logon auditing and that the restored diagnosis decrypts correctly. These tests cover specific demonstrated behavior, not every possible attack, concurrent workload or recovery scenario. Current results are available in the repository's Actions tab.
 
-### Role-Based Access Control (RBAC)
-Roles implemented:
+## Original report
 
-- `r_doctor`
-- `r_nurse`
-- `r_patient`
-- `superadmin` (`db_owner`)
-
-Security model:
-- `DENY` on `app` schema
-- `GRANT SELECT, EXECUTE` on `api` schema
-
-This enforces least privilege and prevents raw table access.
-
-## Appointment & Diagnosis Logic
-Business rules enforced via stored procedures (`EXECUTE AS OWNER`):
-
-- Only nurses can add, reschedule, or cancel appointments.
-- Doctors can add diagnosis only after an appointment exists.
-- Doctors can update only their own diagnosis records.
-- Patients can view only their own diagnosis records.
-- Nurses cannot view diagnosis details.
-
-
-## Column-Level Encryption
-Sensitive fields are encrypted at rest using:
-
-- Database Master Key (DMK),
-- Certificate,
-- AES-256 Symmetric Key.
-
-Encrypted columns include:
-
-- Patient phone and address,  
-- Staff personal details,
-- Diagnosis notes.
-
-Data is stored as `VARBINARY(MAX)` and decrypted only within authorized procedures.
-
-
-
-## Auditing & Traceability
-The system tracks:
-
-- DML operations (INSERT / UPDATE / DELETE),
-- DDL changes (CREATE / ALTER / DROP),
-- DCL actions (GRANT / REVOKE / DENY),
-- Logon events,
-- Historical row versions (Temporal Tables).
-
-All activities are traceable and recoverable.
-
-
-## Temporal Tables
-System-versioned temporal tables are enabled for:
-
-- Patient,
-- Staff,
-- AppointmentAndDiagnosis.
-
-Historical versions are automatically preserved using:
-
-- `SysStartTime`
-- `SysEndTime`
-
-
-## Backup & Recovery Strategy
-
-- FULL recovery model,
-- Full, Differential, and Transaction Log backups,
-- `DBCC CHECKDB` integrity validation,
-- `RESTORE VERIFYONLY` backup verification,
-- Restore test database (`MedicalInfoSystem_RestoreCheck`),
-- Encryption key backup (Certificate + DMK).
-
-This ensures availability and business continuity.
-
-## Security Model Summary
-
-The implementation achieves:
-
-- **Confidentiality** → Encryption + RBAC,
-- **Integrity** → Constraints + Auditing + CHECKDB,
-- **Availability** → Backup + Restore validation, 
-- **Accountability** → Audit logs + Temporal history. 
-
-The SQL script is idempotent and includes:
-
-- Database setup,
-- Security configuration,
-- Encryption, 
-- Diagnosis APIs, 
-- Auditing,  
-- Backup templates.  
-
-## Conclusion
-This project implements a secure, encrypted, auditable, and recoverable medical database.
-
-
+The PDF is the original coursework submission and has been retained as a historical artifact. The maintained SQL and this README include subsequent integrity fixes and testing; the PDF should not be treated as evidence that all current controls or production-security claims have been independently certified.

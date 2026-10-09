@@ -315,7 +315,7 @@ GO
 ------------------------------------------------------------
 -- SECTION: DCL — Allow access via the API surface
 -- PURPOSE: Roles can SELECT/EXECUTE against [api]* only
--- OBJECTS: GRANT on SCHEMA::api to r_doctor / r_nurse / r_patient
+-- OBJECTS: Revoke broad API schema grants; grant only role-appropriate objects
 -- NOTE: Granting at schema-level keeps this file decoupled from later parts.
 ------------------------------------------------------------
 REVOKE SELECT, EXECUTE ON SCHEMA::[api] FROM [r_doctor];
@@ -1734,9 +1734,7 @@ END
 DECLARE @sql2 nvarchar(max) = N'ALTER DATABASE [' + @DB + N'] SET PAGE_VERIFY CHECKSUM;';
 EXEC(@sql2);
 
--- 1.3 Prefer backup compression by default (server-wide)
-EXEC sp_configure 'show advanced options', 1; RECONFIGURE WITH OVERRIDE;
-EXEC sp_configure 'backup compression default', 1; RECONFIGURE WITH OVERRIDE;
+-- Backup statements request compression explicitly; leave server-wide defaults unchanged.
 
 /* ------------------------------------------
    2) INTEGRITY CHECK (pre-backup)
@@ -1830,7 +1828,7 @@ BEGIN TRY
   EXEC(@sqlCert);
 END TRY
 BEGIN CATCH
-  PRINT 'Cert backup skipped or failed: ' + ERROR_MESSAGE();
+  THROW;
 END CATCH;
 
 BEGIN TRY
@@ -1843,7 +1841,7 @@ BEGIN TRY
   EXEC(@sqlDMK);
 END TRY
 BEGIN CATCH
-  PRINT 'DMK backup skipped or failed: ' + ERROR_MESSAGE();
+  THROW;
 END CATCH;
 
 /* ------------------------------------------

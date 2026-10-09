@@ -72,7 +72,10 @@ query("EXEC api.usp_Diag_Update_BySameDoctor @DiagID=1,@DoctorID='D1001',@NewDet
 query("EXEC api.usp_Diag_Update_BySameDoctor @DiagID=1,@DoctorID='D1002',@NewDetails=N'bad';",'D1002','Doctor2#2025!',53101)
 query("EXEC api.usp_App_Add @PatientID='P3002',@DoctorID='D1001',@AppDateTime='2030-02-01';",'N2001','Nurse#2025!')
 query("EXEC api.usp_App_Reschedule @DiagID=2,@NewAppDateTime='2030-02-02'; EXEC api.usp_App_Cancel @DiagID=2;",'N2001','Nurse#2025!')
+query("EXEC api.usp_Staff_Self_Update @StaffID='D1001',@PhonePlain='0312345678',@AddressPlain=N'Audit staff address';",'D1001','Doctor#2025!')
+query("IF NOT EXISTS(SELECT 1 FROM audit.StaffHistory WHERE StaffID='D1001') THROW 55008,'Missing staff history',1; IF NOT EXISTS(SELECT 1 FROM audit.AuditLog_Logon WHERE UserName='P3001') THROW 55009,'Missing patient logon audit',1;")
 # Exercise full/differential/log and key backups in the disposable server only.
 query("EXEC sys.sp_set_session_context @key=N'run_backup_demo',@value=1;\nGO\n"+setup[setup.index('/* ========== PART 8'):])
 query("USE master; DECLARE @path NVARCHAR(4000)=(SELECT TOP 1 mf.physical_device_name FROM msdb.dbo.backupset b JOIN msdb.dbo.backupmediafamily mf ON b.media_set_id=mf.media_set_id WHERE b.database_name='MedicalInfoSystem' AND b.type='D' AND b.is_copy_only=0 ORDER BY b.backup_finish_date DESC); RESTORE DATABASE MedicalInfoSystem_AuditRestore FROM DISK=@path WITH MOVE 'MedicalInfoSystem' TO '/var/opt/mssql/data/audit_restore.mdf',MOVE 'MedicalInfoSystem_log' TO '/var/opt/mssql/data/audit_restore.ldf';")
+query("USE MedicalInfoSystem_AuditRestore; OPEN MASTER KEY DECRYPTION BY PASSWORD='Strong#DMK#2025!'; OPEN SYMMETRIC KEY SimKey1 DECRYPTION BY CERTIFICATE CertForCLE; IF NOT EXISTS(SELECT 1 FROM app.AppointmentAndDiagnosis WHERE DiagID=1 AND CONVERT(NVARCHAR(MAX),DECRYPTBYKEY(DiagDetails_Enc))=N'Updated audit diagnosis') THROW 55010,'Restored diagnosis decryption mismatch',1; CLOSE SYMMETRIC KEY SimKey1; CLOSE MASTER KEY; DBCC CHECKDB WITH NO_INFOMSGS;")
 print(f'PASS: {PASSED} integration queries plus initial installation',flush=True)
