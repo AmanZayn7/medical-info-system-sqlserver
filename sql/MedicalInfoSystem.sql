@@ -1397,12 +1397,13 @@ DROP TRIGGER IF EXISTS trg_LogOnAudit ON ALL SERVER;
 GO
 Create or Alter Trigger trg_LogOnAudit
 On All Server
+WITH EXECUTE AS 'login_superadmin'
 For Logon
 As 
 Begin
 	Begin try
 		Insert Into MedicalInfoSystem.audit.AuditLog_Logon(UserName, HostName, AppName)
-		Select Original_Login(), HOST_NAME(), APP_NAME();
+		Select Original_Login(), LEFT(HOST_NAME(),100), LEFT(APP_NAME(),100);
 	End Try
 	Begin Catch
 
