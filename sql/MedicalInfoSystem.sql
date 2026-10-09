@@ -2,7 +2,7 @@
    MedicalInfoSystem — All Parts (1–7 + Auditing Test)
    Combined SQL Script
    NOTE:
-     - Demo/test blocks inside parts are expected to be commented.
+     - Synthetic data demos are commented out. Backups require explicit session opt-in.
      - Keep restore/PITR templates commented.
      - Run on SQL Server (SSMS). Save file as UTF-8.
    ========================================================= */
@@ -101,7 +101,7 @@ BEGIN
     AppDateTime   DATETIME2(0)      NOT NULL,
     PatientID     CHAR(6)           NOT NULL,                 -- FK → Patient
     DoctorID      CHAR(6)           NOT NULL,                 -- FK → Staff
-    -- DiagDetails_Enc VARBINARY(MAX) is added in Part 5 (Encryption)
+    DiagDetails_Enc VARBINARY(MAX) NULL,
     UpdatedBy     SYSNAME           NULL,
     UpdatedAt     DATETIME2(0)      NOT NULL DEFAULT SYSUTCDATETIME(),
     CONSTRAINT FK_AAD_Patient FOREIGN KEY (PatientID) REFERENCES app.Patient(PatientID),
@@ -116,19 +116,19 @@ GO
 ------------------------------------------------------------
 IF NOT EXISTS (SELECT 1 FROM app.Staff WHERE StaffID='D1001')
   INSERT INTO app.Staff(StaffID, StaffName, Position, OfficePhone, UpdatedBy)
-  VALUES ('D1001','Dr. Ali','Doctor','03-1000-1000', SUSER_SNAME());
+  VALUES ('D1001','Dr. Ali','Doctor','03-1000-1000', ORIGINAL_LOGIN());
 
 IF NOT EXISTS (SELECT 1 FROM app.Staff WHERE StaffID='N2001')
   INSERT INTO app.Staff(StaffID, StaffName, Position, OfficePhone, UpdatedBy)
-  VALUES ('N2001','Nurse Amy','Nurse','03-2000-2000', SUSER_SNAME());
+  VALUES ('N2001','Nurse Amy','Nurse','03-2000-2000', ORIGINAL_LOGIN());
 
 IF NOT EXISTS (SELECT 1 FROM app.Patient WHERE PatientID='P3001')
   INSERT INTO app.Patient(PatientID, PatientName, UpdatedBy)
-  VALUES ('P3001','Patient ThreeZeroZeroOne', SUSER_SNAME());
+  VALUES ('P3001','Patient ThreeZeroZeroOne', ORIGINAL_LOGIN());
 
 IF NOT EXISTS (SELECT 1 FROM app.Patient WHERE PatientID='P3002')
   INSERT INTO app.Patient(PatientID, PatientName, UpdatedBy)
-  VALUES ('P3002','Patient ThreeZeroZeroTwo', SUSER_SNAME());
+  VALUES ('P3002','Patient ThreeZeroZeroTwo', ORIGINAL_LOGIN());
 GO
 
 ------------------------------------------------------------
@@ -136,11 +136,10 @@ GO
 -- PURPOSE: Safe readonly staff directory exposed via api.*
 -- OBJECTS: api.vw_Staff_Directory
 ------------------------------------------------------------
-IF OBJECT_ID(N'api.vw_Staff_Directory','V') IS NULL
 EXEC('
-CREATE VIEW api.vw_Staff_Directory
+CREATE OR ALTER VIEW api.vw_Staff_Directory
 AS
-SELECT s.StaffID, s.StaffName, s.Position, s.OfficePhone
+SELECT s.StaffName, s.OfficePhone
 FROM app.Staff AS s;
 ');
 GO
@@ -319,9 +318,12 @@ GO
 -- OBJECTS: GRANT on SCHEMA::api to r_doctor / r_nurse / r_patient
 -- NOTE: Granting at schema-level keeps this file decoupled from later parts.
 ------------------------------------------------------------
-GRANT SELECT, EXECUTE ON SCHEMA::[api] TO [r_doctor];
-GRANT SELECT, EXECUTE ON SCHEMA::[api] TO [r_nurse];
-GRANT SELECT, EXECUTE ON SCHEMA::[api] TO [r_patient];
+REVOKE SELECT, EXECUTE ON SCHEMA::[api] FROM [r_doctor];
+GRANT SELECT ON OBJECT::api.vw_Staff_Directory TO [r_doctor];
+REVOKE SELECT, EXECUTE ON SCHEMA::[api] FROM [r_nurse];
+GRANT SELECT ON OBJECT::api.vw_Staff_Directory TO [r_nurse];
+REVOKE SELECT, EXECUTE ON SCHEMA::[api] FROM [r_patient];
+GRANT SELECT ON OBJECT::api.vw_Staff_Directory TO [r_patient];
 GO
 
 /* ==========================================
@@ -440,7 +442,7 @@ BEGIN
         THROW 52012, 'Duplicate appointment already exists for this patient, doctor, time.', 1;
 
     INSERT INTO app.AppointmentAndDiagnosis (PatientID, DoctorID, AppDateTime, UpdatedBy, UpdatedAt)
-    VALUES (@PatientID, @DoctorID, @AppDateTime, SUSER_SNAME(), SYSUTCDATETIME());
+    VALUES (@PatientID, @DoctorID, @AppDateTime, ORIGINAL_LOGIN(), SYSUTCDATETIME());
 
     -- Return the newly created row
     SELECT * 
@@ -463,6 +465,9 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM app.AppointmentAndDiagnosis WHERE DiagID=@DiagID)
         THROW 52020, 'Appointment not found.', 1;
 
+    IF EXISTS (SELECT 1 FROM app.AppointmentAndDiagnosis WHERE DiagID=@DiagID AND DiagDetails_Enc IS NOT NULL)
+        THROW 54002, 'A diagnosed appointment cannot be changed or cancelled.', 1;
+
     -- Optional: prevent accidental exact duplicates on reschedule
     IF EXISTS (
         SELECT 1 
@@ -476,9 +481,12 @@ BEGIN
 
     UPDATE app.AppointmentAndDiagnosis
       SET AppDateTime=@NewAppDateTime,
-          UpdatedBy  =SUSER_SNAME(),
+          UpdatedBy  =ORIGINAL_LOGIN(),
           UpdatedAt  =SYSUTCDATETIME()
-    WHERE DiagID=@DiagID;
+    WHERE DiagID=@DiagID AND DiagDetails_Enc IS NULL;
+
+    IF @@ROWCOUNT <> 1
+        THROW 54002, 'Appointment changed concurrently or already has a diagnosis.', 1;
 
     SELECT * 
     FROM api.vw_Appointments_ForNurse
@@ -500,7 +508,12 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM app.AppointmentAndDiagnosis WHERE DiagID=@DiagID)
         THROW 52030, 'Appointment not found.', 1;
 
-    DELETE FROM app.AppointmentAndDiagnosis WHERE DiagID=@DiagID;
+    IF EXISTS (SELECT 1 FROM app.AppointmentAndDiagnosis WHERE DiagID=@DiagID AND DiagDetails_Enc IS NOT NULL)
+        THROW 54002, 'A diagnosed appointment cannot be changed or cancelled.', 1;
+
+    DELETE FROM app.AppointmentAndDiagnosis WHERE DiagID=@DiagID AND DiagDetails_Enc IS NULL;
+    IF @@ROWCOUNT <> 1
+        THROW 54002, 'Appointment changed concurrently or already has a diagnosis.', 1;
 
     -- Return the latest remaining rows as a convenience
     SELECT TOP 10 * 
@@ -546,6 +559,7 @@ GO
    - Shows nurse view at the end
    ========================================== */
 
+/* Optional synthetic demonstration; disabled by default.
 DECLARE @DoctorID CHAR(6);
 SELECT @DoctorID = 'D1001'
 WHERE EXISTS (SELECT 1 FROM app.Staff WHERE StaffID='D1001' AND Position='Doctor');
@@ -602,6 +616,8 @@ END
 EXECUTE AS USER='user_nurse_amy';
     SELECT TOP 20 * FROM api.vw_Appointments_ForNurse ORDER BY AppDateTime DESC, DiagID DESC;
 REVERT;
+
+*/
 
 GO
 
@@ -689,8 +705,7 @@ BEGIN
   SELECT 
     P.PatientID,
     P.PatientName,
-    CONVERT(varchar(200),  DECRYPTBYKEY(P.Phone_Enc))       AS Phone,
-    CONVERT(nvarchar(400), DECRYPTBYKEY(P.HomeAddress_Enc)) AS HomeAddress
+    CONVERT(varchar(200), DECRYPTBYKEY(P.Phone_Enc)) AS Phone
   FROM app.Patient AS P
   WHERE (@PatientID IS NULL OR P.PatientID = @PatientID);
 
@@ -709,6 +724,12 @@ WITH EXECUTE AS OWNER
 AS
 BEGIN
   SET NOCOUNT ON;
+
+    -- Original login is preserved when this module executes as its owner.
+    IF ORIGINAL_LOGIN() <> RTRIM(@PatientID)
+       AND ORIGINAL_LOGIN() <> N'login_superadmin'
+       AND COALESCE(IS_SRVROLEMEMBER(N'sysadmin', ORIGINAL_LOGIN()), 0) <> 1
+        THROW 54001, 'The requested identity does not match the authenticated login.', 1;
   OPEN SYMMETRIC KEY SimKey1 DECRYPTION BY CERTIFICATE CertForCLE;
 
   SELECT 
@@ -732,6 +753,12 @@ AS
 BEGIN
   SET NOCOUNT ON;
 
+    -- Original login is preserved when this module executes as its owner.
+    IF ORIGINAL_LOGIN() <> RTRIM(@PatientID)
+       AND ORIGINAL_LOGIN() <> N'login_superadmin'
+       AND COALESCE(IS_SRVROLEMEMBER(N'sysadmin', ORIGINAL_LOGIN()), 0) <> 1
+        THROW 54001, 'The requested identity does not match the authenticated login.', 1;
+
   IF NOT EXISTS (SELECT 1 FROM app.Patient WHERE PatientID=@PatientID)
     THROW 51001, 'Invalid PatientID.', 1;
 
@@ -742,7 +769,7 @@ BEGIN
                                  ELSE ENCRYPTBYKEY(KEY_GUID('SimKey1'), @PhonePlain) END,
          HomeAddress_Enc = CASE WHEN @AddressPlain IS NULL THEN HomeAddress_Enc
                                  ELSE ENCRYPTBYKEY(KEY_GUID('SimKey1'), @AddressPlain) END,
-         UpdatedBy       = SUSER_SNAME(),
+         UpdatedBy       = ORIGINAL_LOGIN(),
          UpdatedAt       = SYSUTCDATETIME()
    WHERE PatientID=@PatientID;
 
@@ -763,6 +790,12 @@ WITH EXECUTE AS OWNER
 AS
 BEGIN
   SET NOCOUNT ON;
+
+    -- Original login is preserved when this module executes as its owner.
+    IF ORIGINAL_LOGIN() <> RTRIM(@StaffID)
+       AND ORIGINAL_LOGIN() <> N'login_superadmin'
+       AND COALESCE(IS_SRVROLEMEMBER(N'sysadmin', ORIGINAL_LOGIN()), 0) <> 1
+        THROW 54001, 'The requested identity does not match the authenticated login.', 1;
   OPEN SYMMETRIC KEY SimKey1 DECRYPTION BY CERTIFICATE CertForCLE;
 
   SELECT 
@@ -787,6 +820,12 @@ AS
 BEGIN
   SET NOCOUNT ON;
 
+    -- Original login is preserved when this module executes as its owner.
+    IF ORIGINAL_LOGIN() <> RTRIM(@StaffID)
+       AND ORIGINAL_LOGIN() <> N'login_superadmin'
+       AND COALESCE(IS_SRVROLEMEMBER(N'sysadmin', ORIGINAL_LOGIN()), 0) <> 1
+        THROW 54001, 'The requested identity does not match the authenticated login.', 1;
+
   IF NOT EXISTS (SELECT 1 FROM app.Staff WHERE StaffID=@StaffID)
     THROW 52001, 'Invalid StaffID.', 1;
 
@@ -797,7 +836,7 @@ BEGIN
                                    ELSE ENCRYPTBYKEY(KEY_GUID('SimKey1'), @PhonePlain) END,
          HomeAddress_Enc   = CASE WHEN @AddressPlain IS NULL THEN HomeAddress_Enc
                                    ELSE ENCRYPTBYKEY(KEY_GUID('SimKey1'), @AddressPlain) END,
-         UpdatedBy         = SUSER_SNAME(),
+         UpdatedBy         = ORIGINAL_LOGIN(),
          UpdatedAt         = SYSUTCDATETIME()
    WHERE StaffID=@StaffID;
 
@@ -812,6 +851,7 @@ GO
 ------------------------------------------------------------
 -- Nurse operational directory
 GRANT EXECUTE ON OBJECT::api.usp_Patient_Directory   TO [r_nurse];
+GRANT EXECUTE ON OBJECT::api.usp_Patient_Directory   TO [r_doctor];
 
 -- Patients self-service
 GRANT EXECUTE ON OBJECT::api.usp_Patient_Self_Select TO [r_patient];
@@ -830,6 +870,7 @@ GO
    NOTE: Un-comment to run; uses patient personas from Part 2
    ========================================== */
 
+/* Optional synthetic demonstration; disabled by default.
 EXECUTE AS USER = 'user_pt_3001';
 EXEC api.usp_Patient_Self_Update 
      @PatientID='P3001',
@@ -843,6 +884,8 @@ EXEC api.usp_Patient_Self_Update
      @PhonePlain='019-8887777',
      @AddressPlain=N'Block B, Jalan 2, KL';
 REVERT;
+
+*/
 
 
  /* ==========================================
@@ -916,6 +959,12 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
+    -- Original login is preserved when this module executes as its owner.
+    IF ORIGINAL_LOGIN() <> RTRIM(@DoctorID)
+       AND ORIGINAL_LOGIN() <> N'login_superadmin'
+       AND COALESCE(IS_SRVROLEMEMBER(N'sysadmin', ORIGINAL_LOGIN()), 0) <> 1
+        THROW 54001, 'The requested identity does not match the authenticated login.', 1;
+
     IF NOT EXISTS (SELECT 1 FROM app.AppointmentAndDiagnosis WHERE DiagID=@DiagID)
         THROW 53001, 'Appointment (DiagID) not found.', 1;
 
@@ -927,15 +976,24 @@ BEGIN
     )
         THROW 53002, 'Doctor mismatch or not a Doctor.', 1;
 
+    IF @DiagDetails IS NULL OR DATALENGTH(@DiagDetails) > 7000
+        THROW 54003, 'Diagnosis text must be non-null and no more than 7000 bytes.', 1;
+
     OPEN SYMMETRIC KEY SimKey1 DECRYPTION BY CERTIFICATE CertForCLE;
+    DECLARE @Cipher VARBINARY(8000) = ENCRYPTBYKEY(KEY_GUID('SimKey1'), @DiagDetails);
+    CLOSE SYMMETRIC KEY SimKey1;
+    IF @Cipher IS NULL
+        THROW 54004, 'Diagnosis encryption failed.', 1;
 
     UPDATE app.AppointmentAndDiagnosis
-       SET DiagDetails_Enc = ENCRYPTBYKEY(KEY_GUID('SimKey1'), @DiagDetails),
-           UpdatedBy       = SUSER_SNAME(),
+       SET DiagDetails_Enc = @Cipher,
+           UpdatedBy       = ORIGINAL_LOGIN(),
            UpdatedAt       = SYSUTCDATETIME()
-     WHERE DiagID=@DiagID;
+     WHERE DiagID=@DiagID AND DiagDetails_Enc IS NULL;
+    IF @@ROWCOUNT <> 1
+        THROW 54005, 'Diagnosis already exists; use the update procedure.', 1;
 
-    CLOSE SYMMETRIC KEY SimKey1;
+
 
     EXEC api.usp_Diag_Select_All_ForDoctors @FilterDiagID=@DiagID;
 END
@@ -953,18 +1011,31 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
+    -- Original login is preserved when this module executes as its owner.
+    IF ORIGINAL_LOGIN() <> RTRIM(@DoctorID)
+       AND ORIGINAL_LOGIN() <> N'login_superadmin'
+       AND COALESCE(IS_SRVROLEMEMBER(N'sysadmin', ORIGINAL_LOGIN()), 0) <> 1
+        THROW 54001, 'The requested identity does not match the authenticated login.', 1;
+
     IF NOT EXISTS (SELECT 1 FROM app.AppointmentAndDiagnosis WHERE DiagID=@DiagID AND DoctorID=@DoctorID)
         THROW 53101, 'Appointment not found for this doctor.', 1;
 
+    IF @NewDetails IS NULL OR DATALENGTH(@NewDetails) > 7000
+        THROW 54003, 'Diagnosis text must be non-null and no more than 7000 bytes.', 1;
+
     OPEN SYMMETRIC KEY SimKey1 DECRYPTION BY CERTIFICATE CertForCLE;
+    DECLARE @Cipher VARBINARY(8000) = ENCRYPTBYKEY(KEY_GUID('SimKey1'), @NewDetails);
+    CLOSE SYMMETRIC KEY SimKey1;
+    IF @Cipher IS NULL
+        THROW 54004, 'Diagnosis encryption failed.', 1;
 
     UPDATE app.AppointmentAndDiagnosis
-       SET DiagDetails_Enc = ENCRYPTBYKEY(KEY_GUID('SimKey1'), @NewDetails),
-           UpdatedBy       = SUSER_SNAME(),
+       SET DiagDetails_Enc = @Cipher,
+           UpdatedBy       = ORIGINAL_LOGIN(),
            UpdatedAt       = SYSUTCDATETIME()
      WHERE DiagID=@DiagID;
 
-    CLOSE SYMMETRIC KEY SimKey1;
+
 
     EXEC api.usp_Diag_Select_All_ForDoctors @FilterDiagID=@DiagID;
 END
@@ -1012,6 +1083,12 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
+    -- Original login is preserved when this module executes as its owner.
+    IF ORIGINAL_LOGIN() <> RTRIM(@PatientID)
+       AND ORIGINAL_LOGIN() <> N'login_superadmin'
+       AND COALESCE(IS_SRVROLEMEMBER(N'sysadmin', ORIGINAL_LOGIN()), 0) <> 1
+        THROW 54001, 'The requested identity does not match the authenticated login.', 1;
+
     OPEN SYMMETRIC KEY SimKey1 DECRYPTION BY CERTIFICATE CertForCLE;
 
     SELECT
@@ -1052,6 +1129,7 @@ GO
      - Adjust @PerPatientN as you like (e.g., 2, 3, 5)
    ========================================== */
 
+/* Optional synthetic demonstration; disabled by default.
 DECLARE @PerPatientN int = 3;  -- how many appointments per patient to fill
 
 -- Show current state (HAS_NOTE vs MISSING)
@@ -1141,6 +1219,8 @@ WHERE A.PatientID IN ('P3001','P3002')
   AND A.DiagDetails_Enc IS NOT NULL
 ORDER BY A.PatientID, A.DiagID DESC;
 
+*/
+
 GO
 
 /* ========== PART 6 — Auditing.sql ========== */
@@ -1219,7 +1299,7 @@ Go
 --Staff table
 DROP TRIGGER IF EXISTS app.trg_StaffAudit;
 Go
- create or alter trigger trg_StaffAudit
+ CREATE OR ALTER TRIGGER app.trg_StaffAudit
  on app.Staff
  After insert, update, delete
  as
@@ -1243,7 +1323,7 @@ Go
 --Patient Table
 DROP TRIGGER IF EXISTS app.trg_PatientAudit;
 GO
- create or alter trigger trg_PatientAudit
+ CREATE OR ALTER TRIGGER app.trg_PatientAudit
  on app.Patient
  After insert, update, delete
  as
@@ -1269,7 +1349,7 @@ Go
 --Appointment and Diagnosis Table
 DROP TRIGGER IF EXISTS app.trg_AppDiagAudit;
 GO
- create or alter trigger trg_AppDiagAudit
+ CREATE OR ALTER TRIGGER app.trg_AppDiagAudit
  on app.AppointmentAndDiagnosis
  After insert, update, delete
  as
@@ -1348,7 +1428,7 @@ Begin
 		EVENTDATA().value('(/EVENT_INSTANCE/EventType)[1]','NVARCHAR(100)'),
         EVENTDATA().value('(/EVENT_INSTANCE/DatabaseName)[1]','NVARCHAR(100)'),
         EVENTDATA().value('(/EVENT_INSTANCE/ObjectName)[1]','NVARCHAR(200)'),
-        SUSER_SNAME(),
+        ORIGINAL_LOGIN(),
         EVENTDATA().value('(/EVENT_INSTANCE/TSQLCommand/CommandText)[1]','NVARCHAR(MAX)');
 End;
 Go
@@ -1357,51 +1437,7 @@ Go
 /* =========================================================
 	Temporal Table Auditing
    ========================================================= */
-   -- Patient History
-IF OBJECT_ID('audit.PatientHistory', 'U') IS NULL
-BEGIN
-    CREATE TABLE audit.PatientHistory
-    (
-        PatientID    NVARCHAR(10) NOT NULL,
-        PatientName  NVARCHAR(100),
-        Phone_Enc    VARBINARY(MAX),
-        SysStartTime DATETIME2 NOT NULL,
-        SysEndTime   DATETIME2 NOT NULL
-    );
-END;
-GO
-
--- Staff History
-IF OBJECT_ID('audit.StaffHistory', 'U') IS NULL
-BEGIN
-    CREATE TABLE audit.StaffHistory
-    (
-        StaffID      NVARCHAR(10) NOT NULL,
-        StaffName    NVARCHAR(100),
-        Position     NVARCHAR(50),
-        OfficePhone  NVARCHAR(20),
-        SysStartTime DATETIME2 NOT NULL,
-        SysEndTime   DATETIME2 NOT NULL
-    );
-END;
-GO
-
--- AppointmentAndDiagnosis History
-IF OBJECT_ID('audit.AppointmentAndDiagnosisHistory', 'U') IS NULL
-BEGIN
-    CREATE TABLE audit.AppointmentAndDiagnosisHistory
-    (
-        DiagID       INT NOT NULL,
-        AppDateTime  DATETIME2 NOT NULL,
-        PatientID    NVARCHAR(10) NOT NULL,
-        DoctorID     NVARCHAR(10) NOT NULL,
-        DiagDetails_Enc VARBINARY(MAX) NULL,
-        SysStartTime DATETIME2 NOT NULL,
-        SysEndTime   DATETIME2 NOT NULL
-    );
-END;
-GO
-
+-- History tables are created by SQL Server with matching column order and types.
    -- Patient
 If COL_LENGTH('app.Patient', 'SysStartTime') Is Null
 Begin
@@ -1417,8 +1453,7 @@ GO
 
 If Not Exists(
 	Select 1 From sys.tables t
-	Join sys.periods p on t.object_id = p.object_id
-	Where t.name= 'Patient' and SCHEMA_NAME(t.schema_id) = 'app'
+	Where t.name= 'Patient' and SCHEMA_NAME(t.schema_id) = 'app' AND t.temporal_type = 2
 )
 Begin 
 	Alter Table app.Patient
@@ -1441,8 +1476,7 @@ Go
 
 IF NOT EXISTS (
   SELECT 1 FROM sys.tables t
-  JOIN sys.periods p ON t.object_id = p.object_id
-  WHERE t.name = 'Staff' AND SCHEMA_NAME(t.schema_id) = 'app'
+  WHERE t.name = 'Staff' AND SCHEMA_NAME(t.schema_id) = 'app' AND t.temporal_type = 2
 )
 BEGIN
   ALTER TABLE app.Staff
@@ -1465,8 +1499,7 @@ Go
 
 IF NOT EXISTS (
   SELECT 1 FROM sys.tables t
-  JOIN sys.periods p ON t.object_id = p.object_id
-  WHERE t.name = 'AppointmentAndDiagnosis' AND SCHEMA_NAME(t.schema_id) = 'app'
+  WHERE t.name = 'AppointmentAndDiagnosis' AND SCHEMA_NAME(t.schema_id) = 'app' AND t.temporal_type = 2
 )
 BEGIN
   ALTER TABLE app.AppointmentAndDiagnosis
@@ -1660,18 +1693,26 @@ GO
 USE [master];
 GO
 
+IF COALESCE(TRY_CONVERT(bit, SESSION_CONTEXT(N'run_backup_demo')), 0) <> 1
+BEGIN
+    PRINT 'Backup demo skipped. Set SESSION_CONTEXT run_backup_demo=1 to opt in.';
+    RETURN;
+END;
+
 DECLARE @DB sysname              = N'MedicalInfoSystem';
-DECLARE @BackupRoot nvarchar(260)= N'C:\Users\ameer\Desktop\SQLBackups';  -- <<< change to an existing folder
+DECLARE @BackupRoot nvarchar(260)= CONVERT(nvarchar(260), SERVERPROPERTY('InstanceDefaultBackupPath'));
+IF @BackupRoot IS NULL THROW 54006, 'Configure a writable server backup directory.', 1;
+DECLARE @Separator nchar(1) = CASE WHEN LEFT(@BackupRoot, 1) = '/' THEN '/' ELSE N'\' END;
 DECLARE @NowSuffix varchar(19)   = REPLACE(CONVERT(varchar(19), GETDATE(), 120), ':','-'); -- yyyy-mm-dd hh-mm-ss
 
 -- Derived file paths
-DECLARE @FullMasterPath nvarchar(400) = @BackupRoot + N'\FULL_Master_'  + @NowSuffix + N'.bak';
-DECLARE @FullWeeklyPath nvarchar(400) = @BackupRoot + N'\FULL_Weekly_'  + @NowSuffix + N'.bak';
-DECLARE @DiffDailyPath  nvarchar(400) = @BackupRoot + N'\DIFF_Daily_'   + @NowSuffix + N'.bak';
-DECLARE @LogHourlyPath  nvarchar(400) = @BackupRoot + N'\LOG_Hourly_'   + @NowSuffix + N'.trn';
-DECLARE @CertFile       nvarchar(400) = @BackupRoot + N'\CertForCLE_'   + @NowSuffix + N'.cer';
-DECLARE @PvkFile        nvarchar(400) = @BackupRoot + N'\CertForCLE_'   + @NowSuffix + N'.pvk';
-DECLARE @DMKFile        nvarchar(400) = @BackupRoot + N'\DMK_'          + @NowSuffix + N'.bak';
+DECLARE @FullMasterPath nvarchar(400) = @BackupRoot + @Separator + N'FULL_Master_'  + @NowSuffix + N'.bak';
+DECLARE @FullWeeklyPath nvarchar(400) = @BackupRoot + @Separator + N'FULL_Weekly_'  + @NowSuffix + N'.bak';
+DECLARE @DiffDailyPath  nvarchar(400) = @BackupRoot + @Separator + N'DIFF_Daily_'   + @NowSuffix + N'.bak';
+DECLARE @LogHourlyPath  nvarchar(400) = @BackupRoot + @Separator + N'LOG_Hourly_'   + @NowSuffix + N'.trn';
+DECLARE @CertFile       nvarchar(400) = @BackupRoot + @Separator + N'CertForCLE_'   + @NowSuffix + N'.cer';
+DECLARE @PvkFile        nvarchar(400) = @BackupRoot + @Separator + N'CertForCLE_'   + @NowSuffix + N'.pvk';
+DECLARE @DMKFile        nvarchar(400) = @BackupRoot + @Separator + N'DMK_'          + @NowSuffix + N'.bak';
 
 -- OPTIONAL: Enable if you want "ad-hoc" FULLs to not disturb DIFF base
 DECLARE @UseCopyOnlyFull bit = 1;
